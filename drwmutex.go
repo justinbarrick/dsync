@@ -99,6 +99,18 @@ func (dm *DRWMutex) GetLock(id, source string, timeout time.Duration) (locked bo
 	return dm.lockBlocking(timeout, id, source, isReadLock)
 }
 
+// GetLockNonBlocking tries to get a write lock on dm, but will not block
+// if the lock has been acquired by a different node.
+//
+// If the lock is already in use, the lock returns false immediately, but it
+// will block indefinitely for a complete quorum to be established - when this
+// method returns, the lock will either be acquired by us or someone else.
+func (dm *DRWMutex) GetLockNonBlocking(id, source string) (locked bool) {
+	isReadLock := false
+	locks := make([]string, dm.clnt.dNodeCount)
+	return lock(dm.clnt, &locks, dm.Name, id, source, drwMutexInfinite, isReadLock)
+}
+
 // RLock holds a read lock on dm.
 //
 // If one or more read locks are already in use, it will grant another lock.
@@ -136,7 +148,7 @@ func (dm *DRWMutex) lockBlocking(timeout time.Duration, id, source string, isRea
 		locks := make([]string, dm.clnt.dNodeCount)
 
 		// Try to acquire the lock.
-		success := lock(dm.clnt, &locks, dm.Name, id, source, isReadLock)
+		success := lock(dm.clnt, &locks, dm.Name, id, source, DRWMutexAcquireTimeout, isReadLock)
 		if success {
 			dm.m.Lock()
 			defer dm.m.Unlock()
@@ -163,7 +175,7 @@ func (dm *DRWMutex) lockBlocking(timeout time.Duration, id, source string, isRea
 }
 
 // lock tries to acquire the distributed lock, returning true or false.
-func lock(ds *Dsync, locks *[]string, lockName, id, source string, isReadLock bool) bool {
+func lock(ds *Dsync, locks *[]string, lockName, id, source string, acquireTimeout time.Duration, isReadLock bool) bool {
 
 	// Create buffered channel of size equal to total number of nodes.
 	ch := make(chan Granted, ds.dNodeCount)
@@ -220,7 +232,7 @@ func lock(ds *Dsync, locks *[]string, lockName, id, source string, isReadLock bo
 		//
 		i, locksFailed := 0, 0
 		done := false
-		timeout := time.After(DRWMutexAcquireTimeout)
+		timeout := time.After(acquireTimeout)
 
 		for ; i < ds.dNodeCount; i++ { // Loop until we acquired all locks
 
